@@ -361,3 +361,69 @@ test(
     }
   },
 );
+
+// What the runtime directory allows, as SDDL, and the SID of this user.
+async function permissions(path) {
+  return JSON.parse(
+    await execute('pwsh.exe', [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `@{ sddl = (Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl; sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } | ConvertTo-Json -Compress`,
+    ]),
+  );
+}
+
+test(
+  'the SSH runtime directory and its keys are reachable by this user alone',
+  { skip: !available, timeout: 30000 },
+  async () => {
+    const { directory } = await prepare();
+    try {
+      const folder = await permissions(directory);
+      // Protected from inheritance, with one entry: full control for this user, passed on to what is inside.
+      assert.match(folder.sddl, new RegExp(`D:PAI\\(A;OICI;FA;;;${folder.sid}\\)$`));
+      const key = await permissions(join(directory, 'authorized_keys'));
+      assert.match(key.sddl, new RegExp(`D:AI\\(A;ID;FA;;;${key.sid}\\)$`));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  'preparing fails at once where this user may write but not change permissions',
+  { skip: !available, timeout: 30000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'cc-desk-tunnel-ssh-'));
+    try {
+      // OWNER RIGHTS takes the place of what the owner may implicitly do, here everything but changing permissions.
+      await execute('icacls.exe', [
+        directory,
+        '/inheritance:r',
+        '/grant:r',
+        '*S-1-3-4:(OI)(CI)M',
+        '*S-1-5-32-545:(OI)(CI)RX',
+      ]);
+      await assert.rejects(
+        execute('pwsh.exe', [
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-File',
+          resolve('apps/desktop/electron/prepare-ssh.ps1'),
+          '-Runtime',
+          directory,
+          '-OpenSshDirectory',
+          join(vendor, 'openssh'),
+          '-Port',
+          '1',
+        ]),
+        /icacls failed/,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

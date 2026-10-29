@@ -8,7 +8,11 @@ if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required.' }
 # The parent reads stdout as UTF-8, including executable paths in the connection JSON.
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-icacls.exe $Runtime /inheritance:r /grant:r "*$($sid.Value):(OI)(CI)F" | Out-Null
+# Only this user may reach the keys. icacls writes the DACL alone; Set-Acl also tries the audit list, which needs a
+# privilege a standard user does not hold. A native command does not stop the script by itself, so its result is
+# checked: without the right to change permissions here, ssh-keygen would hang instead of failing.
+& (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Runtime /inheritance:r /grant:r "*$($sid.Value):(OI)(CI)F" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'icacls failed.' }
 $keygen = Join-Path $OpenSshDirectory 'ssh-keygen.exe'
 foreach ($name in @('host', 'identity')) {
   & $keygen -q -t ed25519 -N '' -f (Join-Path $Runtime $name)
